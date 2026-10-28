@@ -1,0 +1,24 @@
+{
+  "name": "orbigen",
+  "version": "1.57.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --experimental-loader ./tests/three-loader.mjs --test tests/*.test.mjs",
+    "test:vegetation": "node --experimental-loader ./tests/three-loader.mjs tests/vegetation-generator.check.mjs",
+    "test:tree-review": "node --experimental-loader ./tests/three-loader.mjs --test tests/tree-review.test.mjs",
+    "test:tree-review:http": "node --experimental-loader ./tests/three-loader.mjs scripts/check-tree-review-http.mjs",
+    "build:tree-review": "node scripts/sync-tree-review-worker.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "description": "构件：本地 3D 素材管理、树木制作与装配工作台",
+  "license": "GPL-3.0-or-later",
+  "author": "RyanLoveAI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RyanLoveAI/Orbigen.git"
+  }
+}

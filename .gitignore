@@ -1,0 +1,34 @@
+# Local data and credentials
+/data/
+/Data/
+/logs/
+/Logs/
+/本地素材/
+/FourViewInbox/
+/node_modules/
+.env
+.env.*
+!.env.example
+*.dpapi
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+*.db-*
+.portable-*
+__pycache__/
+*.pyc
+*.log
+# Personal asset packs and outputs
+/public/tree-validation/
+/public/modules/vegetation/engine/assets/plants/*.json
+/outputs/
+/backups/
+*.blend
+*.blend1
+*.fbx
+*.glb
+*.treekit
+# Operating systems
+.DS_Store
+Thumbs.db

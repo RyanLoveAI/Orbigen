@@ -1,0 +1,49 @@
+import * as T from 'three';
+import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
+import {buildBranchAsset,normalizeSettings,DEFAULT_SETTINGS,createProjectDocument,disposeBranchAsset,deserializeGeometry} from '../vegetation/engine/branch-kernel.js';
+import {normalizeAuthoring} from '../vegetation/engine/authoring-state.js';
+import {validateTreeRecipe,normalizeTreeRecipe,QUALITY} from './schema.js';
+import {leafGeometry,leafPreview} from './components.js';
+import {inspectTreeMeshes} from './inspect.js';
+
+// Editable authored curves, plus solid needle units, evaluated by the existing plant kernel.
+export function buildTree(input,quality='PREVIEW',pack=null,mode='TREE') {
+  validateTreeRecipe(input);const r=normalizeTreeRecipe(input);if(!['TREE','TRUNK','BRANCH','LEAF'].includes(mode))throw Error('预览组件无效');const q=QUALITY[quality];if(!q)throw Error('模型精度无效');
+  if(r.leaf.kind==='CAMPHOR'&&!pack?.leaf_meshes?.length)throw Error('阔叶素材尚未载入');
+  if(mode==='LEAF')return leafPreview(r,quality,pack);
+  let state=r.seed>>>0;const rnd=()=>{state=(Math.imul(state,1664525)+1013904223)>>>0;return state/4294967296;},rand=(a,b)=>a+(b-a)*rnd(),v=p=>new T.Vector3(...p),H=r.height;
+  const branches=[],overrides={};
+  function add(id,parent,attach,knots,r1,r2,bare=false){const points=new T.CatmullRomCurve3(knots.map(v),false,'centripetal').getPoints(parent?12:50).map(p=>p.toArray());const b={id,parent,attach,knots,points,length:points.slice(1).reduce((s,p,i)=>s+v(p).distanceTo(v(points[i])),0),start_radius:r1,end_radius:r2,radius_profile:[1,1,1]};branches.push(b);if(bare)overrides[id]={leaf_density:0};return b;}
+  const at=(b,t)=>{const f=Math.min(1,Math.max(0,t))*(b.points.length-1),i=Math.min(b.points.length-2,Math.floor(f));return v(b.points[i]).lerp(v(b.points[i+1]),f-i);};
+  const trunk=add('TRUNK','',0,r.trunk.map(([x,y,z])=>[x*H,z*H,y*H]),H*r.radius,H*.0015,true);
+  for(let i=0;i<r.rootCount;i++){const a=i*Math.PI*2/r.rootCount,c=at(trunk,.005),L=H*rand(.055,.1),dx=Math.cos(a),dy=Math.sin(a);add('ROOT_'+i,'TRUNK',.005,[c.toArray(),[dx*L*.45,dy*L*.45,H*.012],[dx*L,dy*L,0]],H*r.radius*.28,H*.0006,true);}
+  let serial=0;const fans=[];
+  for(const tier of r.tiers.filter(t=>t.enabled))for(let arm=0;arm<r.branch.arms;arm++){
+    const broad=r.leaf.kind!=='NEEDLE',target=tier.height*H;let knot=0;while(knot<trunk.points.length-2&&trunk.points[knot+1][2]<target)knot++;const p0=trunk.points[knot],p1=trunk.points[knot+1],mix=Math.max(0,Math.min(1,(target-p0[2])/Math.max(1e-9,p1[2]-p0[2]))),base=(knot+mix)/(trunk.points.length-1),c=at(trunk,base);const layered=r.branch.form==='LAYERED',a=((layered&&r.branch.arms===3?(arm===0?176:arm===1?12:90):arm*360/r.branch.arms)+tier.yaw+(layered?0:Math.floor(tier.height*10)*r.branch.twist)+rand(-1,1)*r.branch.variation*60)*Math.PI/180;
+    const form=r.branch.form,shape=form==='ROUND'?(.5+.5*Math.sin(Math.PI*tier.height)):form==='COLUMN'?(1-.55*tier.height):1,wind=r.preset==='WINDSWEPT_PINE',L=H*tier.spread*r.crown*shape*(arm===2?.75:rand(.94,1.06))*(wind&&arm===0?.58:1),dx=Math.cos(a),dy=Math.sin(a),rise=H*(tier.rise-(form==='WEEPING'?r.branch.droop:0));
+    const b=add('ARM_'+(++serial),'TRUNK',base,[c.toArray(),[c.x+dx*L*.3,c.y+dy*L*.3,c.z+H*.018],[c.x+dx*L*.7,c.y+dy*L*.7,c.z-H*.019],[c.x+dx*L,c.y+dy*L,c.z+rise]],H*r.radius*.24*tier.radius,H*.0008,true);
+    for(let j=0;j<r.branch.fans+2+(quality==='FINE'?3:quality==='STANDARD'?2:0);j++){
+      const u=.27+(j+.3)/(r.branch.fans+2+(quality==='FINE'?3:quality==='STANDARD'?2:0))*.69,p=at(b,u),sa=a+(j%2?1:-1)*rand(.45,1.03),sl=H*rand(.045,.105)*(1-u*.38)*(broad?1.25:1),end=p.clone().add(new T.Vector3(Math.cos(sa)*sl,Math.sin(sa)*sl,H*(rand(.010,.04)-(form==='WEEPING'?r.branch.droop*.6:0))));
+      const fan=add('FAN_'+b.id+'_'+j,b.id,u,[p.toArray(),p.clone().lerp(end,.5).add(new T.Vector3(0,0,-H*.008)).toArray(),end.toArray()],H*.0018*tier.radius,H*.0003,true);fans.push({b:fan,a:sa});
+    }
+  }
+  for(const {b,a} of fans)for(let k=0;k<r.branch.shoots+(quality==='FINE'?2:quality==='STANDARD'?1:0);k++){const u=.26+(k+.3)/(r.branch.shoots+(quality==='FINE'?2:quality==='STANDARD'?1:0))*.70,p=at(b,u),angle=a+(k%2?1:-1)*rand(.3,1),L=H*rand(.02,.04),end=p.clone().add(new T.Vector3(Math.cos(angle)*L,Math.sin(angle)*L,H*rand(.018,.035)));add('SHOOT_'+b.id+'_'+k,b.id,u,[p.toArray(),p.clone().lerp(end,.55).toArray(),end.toArray()],H*.00055,H*.0001);}
+  // Crown leader closes the top and keeps growth tips, rather than a cut trunk cap.
+  for(let i=0;i<8;i++){const u=.89+i*.012,p=at(trunk,u),a=i*2.39996,end=p.clone().add(new T.Vector3(Math.cos(a)*H*.035,Math.sin(a)*H*.035,H*.032));const b=add('LEADER_'+i,'TRUNK',u,[p.toArray(),end.toArray()],H*.0012,H*.0002,true);const s=at(b,.6),e=end.clone().add(new T.Vector3(0,0,H*.02));const fan=add('TOPFAN_'+i,b.id,.6,[s.toArray(),e.toArray()],H*.0006,H*.0001,true);add('TOPSHOOT_'+i,fan.id,.5,[at(fan,.5).toArray(),e.clone().add(new T.Vector3(H*.01,0,H*.01)).toArray()],H*.0003,H*.0001);}
+  const broad=r.leaf.kind!=='NEEDLE',leaf=leafGeometry(r,quality,pack,rnd);
+  const leaves=[{id:'TREE_LEAF',name:'独立叶片组件',colorTint:r.leafColor,weight:1,orderMin:mode==='BRANCH'?2:3,orderMax:3,geometry:leaf,calibration:{scale:1,rotation:0,flip:false}}];
+  let evaluated=branches;
+  if(mode==='TRUNK')evaluated=branches.filter(b=>b.id==='TRUNK'||b.id.startsWith('ROOT_'));
+  if(mode==='BRANCH'){const root=branches.find(b=>b.id.startsWith('ARM_'));if(!root)throw Error('请先启用一个枝层');const ids=new Set([root.id]);for(const b of branches)if(ids.has(b.parent))ids.add(b.id);evaluated=branches.filter(b=>ids.has(b.id)).map(b=>({...b,parent:b.id===root.id?'':b.parent,attach:b.id===root.id?0:b.attach,knots:b.knots.map(p=>p.map((v,i)=>v-root.points[0][i])),points:b.points.map(p=>p.map((v,i)=>v-root.points[0][i]))}));}
+  const settings=normalizeSettings({...DEFAULT_SETTINGS,object_name:'树木制作_'+r.seed,seed:r.seed,length:H,base_radius:H*r.radius,tip_radius:.001,root_elevation:90,architecture:'LAYERED',species_profile:r.branch.form==='WEEPING'?'WILLOW':broad?'BROADLEAF':'CONIFER',child_count:0,branch_levels:4,radial_segments:q.sides,main_segments:24,adaptive_tessellation:true,surface_roughness:r.roughness,groove_depth:.055,knot_strength:.025,lobe_strength:.045,bark_color:r.barkColor,leaf_color:'#ffffff',leaf_scale:r.leafSize,leaf_density:(broad?24:10)*r.density*q.density*11/H,leaf_scale_variation:.32,leaf_min_spacing:.035*H/11,collision_avoidance:true,leaf_zone_start:r.branch.leafStart,leaf_double_sided:true,leaf_arrangement:r.leaf.arrangement,leaf_droop:r.leaf.droop,petiole_length:broad?r.leaf.petiole:0,branch_clearance:0,foliage_mode:'SINGLE',max_triangles:q.budget,max_leaves:Math.max(0,Math.min(6500,Math.floor(q.budget*.55/(leaf.index.count/3+(broad?90:0))))),merge_by_material:true,wind_strength:.06,export_lods:false,generation_budget_ms:15000});
+  const authoring=normalizeAuthoring({branch_shape:{branches:evaluated,connector:{position:[0,0,0],direction:[0,0,1],locked:true}},overrides,recipe:{name:settings.object_name,tags:['ORBIGEN_REFERENCE_TREE_V1']},level_rules:[0,1,2,3].map(i=>({enabled:true,leaves:i===(mode==='BRANCH'?2:3)?1:0})),attachment_layers:[{id:'NEEDLES',name:broad?'真实阔叶':'实体针叶簇',type:'LEAF',enabled:mode!=='TRUNK',order_min:mode==='BRANCH'?2:3,order_max:3,start:r.branch.leafStart,end:1,density:1,scale:1}],...(r.leaf.kind==='CAMPHOR'?{leaf_material:pack.leaf_material}:{} )},r.seed);
+  let asset;try{
+    asset=buildBranchAsset(settings,null,leaves,0,authoring);if(!asset.report.ok||asset.report.triangles>q.budget)throw Error('树木几何检查未通过：'+asset.report.warnings.join('；'));
+    const document=createProjectDocument(asset,leaves,authoring);document.workspaces={version:2,active:'TREE',tree:null,branch:null,vine:null};
+    const box=new T.Box3().setFromObject(asset.group,true),size=box.getSize(new T.Vector3()),scale=mode==='TREE'?H/size.z:1;
+    const frame=new T.Matrix4().makeScale(scale,scale,scale).multiply(new T.Matrix4().makeRotationX(-Math.PI/2)).multiply(new T.Matrix4().makeTranslation(-(box.min.x+box.max.x)/2,-(box.min.y+box.max.y)/2,-box.min.z));
+    const groups=new Map();asset.group.updateMatrixWorld(true);asset.group.traverse(o=>{if(!o.isMesh)return;const mats=Array.isArray(o.material)?o.material:[o.material];if(mats.length!==1)throw Error('树木材质槽异常');const m=mats[0],key=m.name+':'+m.color.getHexString();if(!groups.has(key))groups.set(key,{material:{name:m.name,color:'#'+m.color.getHexString(),roughness:m.roughness,doubleSided:m.side===T.DoubleSide,bark:m.name==='M_Bark',leafTexture:r.leaf.kind==='CAMPHOR'&&m.name==='M_Leaf'?pack.leaf_material:null,proceduralLeaf:broad&&r.leaf.kind!=='CAMPHOR'&&r.leaf.kind!=='CUSTOM'&&m.name==='M_Leaf'},geometries:[]});const g=o.geometry.clone();g.applyMatrix4(new T.Matrix4().multiplyMatrices(frame,o.matrixWorld));if(g.hasAttribute('color')){g.setAttribute('_BRANCH_WIND',g.getAttribute('color'));g.deleteAttribute('color');}g.deleteAttribute('tangent');g.deleteAttribute('uv1');groups.get(key).geometries.push(g);});
+    const meshes=[];for(const {material,geometries} of groups.values()){const g=mergeGeometries(geometries,false);if(!g)throw Error('树木网格合并失败');const attrs=Object.fromEntries(Object.entries(g.attributes).map(([name,a])=>[name,{array:new Float32Array(a.array),itemSize:a.itemSize}]));meshes.push({material,attributes:attrs,index:new Uint32Array(g.index.array)});geometries.forEach(g=>g.dispose());g.dispose();}
+    return {meshes,report:{...asset.report,draw_calls:meshes.length,quality,branches:asset.masterBranches.length,sprays:asset.masterPlacements.length,height:mode==='TREE'?H:size.z,mode,review:inspectTreeMeshes(meshes,evaluated)},frame:frame.toArray(),document};
+  }finally{if(asset)disposeBranchAsset(asset);leaves.forEach(l=>l.geometry.dispose());}
+}
